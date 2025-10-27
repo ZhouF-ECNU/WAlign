@@ -157,7 +157,7 @@ class FashionMNIST_Dataset:
 
         self.train_set, self.test_set = self.create_datasets(train_set, test_set, train_indices, test_indices)
 
-    def pretrain_autoencoder(self, num_epochs=5):
+    def pretrain_autoencoder(self, num_epochs=1):
         # 预训练Autoencoder
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.model.parameters(), lr=1e-3)
@@ -202,25 +202,15 @@ class FashionMNIST_Dataset:
         x_train_unlabeled = train_set.data[unlabeled_train_indices]
         y_train_unlabeled = train_set.targets[unlabeled_train_indices]
 
+        # 为有标签数据创建聚类标签（全0）
         cluster_targets_labeled = torch.zeros(len(labeled_train_indices), dtype=torch.int64)
-
-        transform_ = transforms.Compose([transforms.ToTensor()])
-        feature_train_loader = DataLoader(MyDataset(x_train_unlabeled, y_train_unlabeled, None, transform=transform_), batch_size=64, shuffle=False)
-        unlabeled_features = self.extract_features(feature_train_loader)
-
-        # 计算无标签训练数据表征的中心
-        center = np.mean(unlabeled_features, axis=0)
-
-        # 筛选无标签数据
-        x_train_unlabeled, y_train_unlabeled = self.filter_outlier(x_train_unlabeled, y_train_unlabeled, center)
-
-        # 聚类无标签数据
-        feature_unlabeled_loader = DataLoader(MyDataset(x_train_unlabeled, y_train_unlabeled, None, transform=transform_), batch_size=64, shuffle=False)
-        train_features = self.extract_features(feature_unlabeled_loader)
-
-        spectral = SpectralClustering(n_clusters=3, affinity='nearest_neighbors', random_state=42)
-        spectral.fit(train_features)
-        cluster_targets_unlabeled = torch.tensor(spectral.labels_, dtype=torch.int64) + 1
+        
+        # 随机为无标签数据分配聚类标签（1, 2）
+        np.random.seed(self.random_seed)
+        cluster_targets_unlabeled = torch.tensor(
+            np.random.randint(1, 3, size=len(unlabeled_train_indices)), 
+            dtype=torch.int64
+        )
 
         x_train = train_set.data[np.concatenate((labeled_train_indices, unlabeled_train_indices))]
         y_train = train_set.targets[np.concatenate((labeled_train_indices, unlabeled_train_indices))]
@@ -230,7 +220,6 @@ class FashionMNIST_Dataset:
         y_test = test_set.targets[labeled_test_indices]
 
         train_dataset = MyDataset(x_train, y_train, cluster_targets, transform=train_set.transform, target_transform=train_set.target_transform)
-
         # 控制test是all还是unseen
         # filtered_indices = np.where(~np.isin(y_test.numpy(), [5,7]))[0]
         # x_test = x_test[filtered_indices]
@@ -238,37 +227,6 @@ class FashionMNIST_Dataset:
         test_dataset = MyDataset(x_test, y_test, torch.zeros_like(y_test), transform=test_set.transform, target_transform=test_set.target_transform)
 
         return train_dataset, test_dataset
-
-    def filter_outlier(self, x_unlabeled, y_unlabeled, center, threshold=0.05):
-        transform_ = transforms.Compose([transforms.ToTensor()])
-        feature_unlabeled_loader = DataLoader(MyDataset(x_unlabeled, y_unlabeled, None, transform=transform_), batch_size=64, shuffle=False)
-        
-        # 提取无标签数据的特征
-        features_unlabeled = self.extract_features(feature_unlabeled_loader)
-
-        # 计算到中心的距离
-        distances = np.linalg.norm(features_unlabeled - center, axis=1)
-        print(distances)
-
-        threshold_distance = np.percentile(distances, 95)
-
-        mask = distances <= threshold_distance
-        filtered_x = x_unlabeled[mask]
-        filtered_y = y_unlabeled[mask]
-
-        # 找到被筛除的索引
-        excluded_indices = np.where(~mask)[0]  # 反向索引
-        print("Excluded indices from unlabeled data:", excluded_indices)
-
-        # 打印被删除样本的距离值
-        excluded_distances = distances[excluded_indices]
-        print("Distances of excluded samples:", excluded_distances)
-
-        # 打印实际有多少真实异常被筛除
-        count = np.sum(excluded_indices >= 9500)
-        print(count)
-
-        return filtered_x, filtered_y
 
     def extract_features(self, data_loader):
         self.model.eval()
@@ -299,10 +257,7 @@ if __name__ == "__main__":
     train_dataset = fashion_mnist_dataset.train_set
     test_dataset = fashion_mnist_dataset.test_set
 
-    print("train_cluster_target: ", train_dataset.cluster_targets)
-    
-
-    train_file = "/data/fmnist/fashionmnist_train_data.npz"
-    test_file = "/data/fmnist/fashionmnist_test_data.npz"
+    train_file = "/home/lgy/myModel/DeepSAD_WAlign_fmnist/data/random/unseen/fashionmnist_train_data.npz"
+    test_file = "/home/lgy/myModel/DeepSAD_WAlign_fmnist/data/random/unseen/fashionmnist_test_data.npz"
 
     fashion_mnist_dataset.save_datasets(train_file, test_file)

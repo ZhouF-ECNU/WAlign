@@ -13,7 +13,7 @@ from torchvision import transforms
 from collections import Counter
 
 torch.cuda.empty_cache()
-device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+device = 'cuda:3' if torch.cuda.is_available() else 'cpu'
 torch.set_printoptions(threshold=float('Inf'))
 np.set_printoptions(threshold=np.inf)
 
@@ -120,12 +120,11 @@ class LeNetAutoencoder(nn.Module):
         return x
 
 class MyMNISTC(Dataset):
-    def __init__(self, root, is_train=True, transform=None, target_transform=None, k=3, encoder=None):
+    def __init__(self, root, is_train=True, transform=None, target_transform=None, encoder=None):
         self.root = root
         self.is_train = is_train
         self.transform = transform
         self.target_transform = target_transform
-        self.k = k
         self.data = []
         self.labels = []
         self.semi_targets = []
@@ -186,14 +185,14 @@ class MyMNISTC(Dataset):
                     self._append_data(img_path, 0, semi_target_idx)
                 semi_target_idx += 1
 
-            # Load test seen anomaly
-            seen_anomaly_path = os.path.join(test_anomaly_path, 'seen_anomaly')
-            for seen_anomaly_folder in os.listdir(seen_anomaly_path):
-                seen_anomaly_folder_path = os.path.join(seen_anomaly_path, seen_anomaly_folder)
-                for img_name in os.listdir(seen_anomaly_folder_path):
-                    img_path = os.path.join(seen_anomaly_folder_path, img_name)
-                    self._append_data(img_path, 1, semi_target_idx)
-                semi_target_idx += 1
+            # # Load test seen anomaly
+            # seen_anomaly_path = os.path.join(test_anomaly_path, 'seen_anomaly')
+            # for seen_anomaly_folder in os.listdir(seen_anomaly_path):
+            #     seen_anomaly_folder_path = os.path.join(seen_anomaly_path, seen_anomaly_folder)
+            #     for img_name in os.listdir(seen_anomaly_folder_path):
+            #         img_path = os.path.join(seen_anomaly_folder_path, img_name)
+            #         self._append_data(img_path, 1, semi_target_idx)
+            #     semi_target_idx += 1
 
             # Load test unseen anomaly
             unseen_anomaly_path = os.path.join(test_anomaly_path, 'unseen_anomaly')
@@ -267,63 +266,34 @@ class MyMNISTC(Dataset):
                 features.append(feature.cpu().numpy())
         return np.concatenate(features, axis=0)
 
-    def filter_outliers(self, unlabeled_data):
-        unlabeled_loader = DataLoader(unlabeled_data, batch_size=64, shuffle=False)
-        unlabeled_features = self.extract_features(unlabeled_loader)
-        center = np.mean(unlabeled_features, axis=0)
-
-        distances = np.linalg.norm(unlabeled_features - center, axis=1)
-        # print("distances:", distances)
-        
-        threshold_index = int(len(distances) * 0.95)
-        threshold_distance = np.partition(distances, threshold_index)[threshold_index]
-        
-        # 获取距离最远的 5% 样本的索引和距离值
-        farthest_indices = np.where(distances > threshold_distance)[0]
-        farthest_distances = distances[farthest_indices]
-        print("farthest_indices:", farthest_indices)
-        print("farthest_distances:", farthest_distances)
-        
-        filtered_indices = np.where(distances <= threshold_distance)[0]
-        # print("filtered_indices:", filtered_indices)
-        
-        return filtered_indices, len(unlabeled_features)
-
     def _perform_clustering(self):
         if not self.is_train:
             print("Skipping clustering for test data.")
             self.cluster_targets = [0] * len(self.data)
             return
 
-        unlabeled_data = [self.data[i] for i, target in enumerate(self.semi_targets) if target != -1]
-        unlabeled_data = torch.stack(unlabeled_data)
-
-        filtered_indices, total_unlabeled = self.filter_outliers(unlabeled_data)
-        filtered_data = unlabeled_data[filtered_indices]
-
-        if len(unlabeled_data) == 0:
-            print("No unlabeled data available after filtering.")
-            self.cluster_targets = [0] * len(self.data)
-            return
-
-        unlabeled_loader = DataLoader(filtered_data, batch_size=64, shuffle=False)
-        filtered_features = self.extract_features(unlabeled_loader)
-        print("Unlabeled features shape:", filtered_features.shape)
-
-        # spectral = SpectralClustering(n_clusters=self.k, random_state=42, affinity='nearest_neighbors')
-        # cluster_labels = spectral.fit_predict(filtered_features)
-        kmeans = KMeans(n_clusters=self.k, random_state=42, n_init=10, init='k-means++')
-        cluster_labels = kmeans.fit_predict(filtered_features)
-
-        # 初始化 cluster_targets
+        # 初始化聚类目标
         cluster_targets = [0] * len(self.data)
-        filtered_indices_mapping = [i for i, target in enumerate(self.semi_targets) if target != -1]
-
-        for idx, cluster_label in zip(filtered_indices, cluster_labels):
-            data_idx = filtered_indices_mapping[idx]
-            cluster_targets[data_idx] = cluster_label + 1  # 聚类标签从 1 开始
-
+        
+        # 获取无标签数据的索引
+        unlabeled_indices = [i for i, target in enumerate(self.semi_targets) if target != -1]
+        
+        # 随机生成聚类标签(1或2)
+        np.random.seed(42)  # 设置随机种子以保持一致性
+        random_clusters = np.random.randint(1, 3, size=len(unlabeled_indices))
+        
+        # 为无标签数据分配随机聚类标签
+        for idx, cluster_label in zip(unlabeled_indices, random_clusters):
+            cluster_targets[idx] = cluster_label
+        
+        # 为标记的异常样本分配-1标签
+        labeled_anomaly_indices = [i for i, target in enumerate(self.semi_targets) if target == -1]
+        for idx in labeled_anomaly_indices:
+            cluster_targets[idx] = -1
+            
         self.cluster_targets = cluster_targets
+        print("Random clustering completed. Cluster distribution:")
+        print(Counter(self.cluster_targets))
 
     def __len__(self):
         return len(self.data)
@@ -342,7 +312,7 @@ class MyMNISTC(Dataset):
         return img, label, semi_target, cluster_target
 
 class MNISTC_Dataset:
-    def __init__(self, root: str, random_seed: int = 42, k=3):
+    def __init__(self, root: str, random_seed: int = 42):
         self.root = root
         self.random_seed = random_seed
 
@@ -361,8 +331,8 @@ class MNISTC_Dataset:
         ])
 
         # load dataset
-        self.train_set = MyMNISTC(root=os.path.join(self.root, 'train'), is_train=True, transform=transform, k=k)
-        self.test_set = MyMNISTC(root=os.path.join(self.root, 'test'), is_train=False, transform=test_transform, k=k)
+        self.train_set = MyMNISTC(root=os.path.join(self.root, 'train'), is_train=True, transform=transform)
+        self.test_set = MyMNISTC(root=os.path.join(self.root, 'test'), is_train=False, transform=test_transform)
 
     def save_data(self, filename, data, labels, semi_targets=None, cluster_targets=None):
         data_tensor = torch.stack(data)
@@ -382,18 +352,19 @@ class MNISTC_Dataset:
         return self.test_set
 
 if __name__ == "__main__":
-    root = "./data/mnistc3_con_new"
+    root = "/home/lgy/myModel/data/mnistc3_con_new"
     random_seed = 42
-    k = 3
 
-    mnistc_dataset = MNISTC_Dataset(root, random_seed, k)
+    mnistc_dataset = MNISTC_Dataset(root, random_seed)
 
-    train_file = "normal-distribution-alignment/data/mnistc_train_data.pth"
-    test_file = "normal-distribution-alignment/data/mnistc_test_data.pth"
+    train_file = "/home/lgy/myModel/random/data/mnistc/unseen/mnistc_train_data.pth"
+    test_file = "/home/lgy/myModel/random/data/mnistc/unseen/mnistc_test_data.pth"
 
     mnistc_dataset.save_datasets(train_file, test_file)
 
     print("Train set cluster targets:", mnistc_dataset.get_train_set().cluster_targets)
     cluster_targets = mnistc_dataset.get_train_set().cluster_targets
     print(Counter(cluster_targets))
-    # print("Test set cluster targets:", mnistc_dataset.get_test_set().cluster_targets)
+    print("Test set cluster targets:", mnistc_dataset.get_test_set().cluster_targets)
+    cluster_targets_test = mnistc_dataset.get_test_set().cluster_targets
+    print(Counter(cluster_targets_test))
