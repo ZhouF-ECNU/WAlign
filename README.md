@@ -6,7 +6,7 @@ Anomaly detection is a critical component for ensuring data quality in data mana
 
 ---
 
-![Workflow](./workflow.pdf)
+![Workflow](./workflow.png)
 
 ## Running environment
 Python version 3.8.18
